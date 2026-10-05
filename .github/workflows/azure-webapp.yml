@@ -1,0 +1,85 @@
+name: Test and deploy to Azure
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Prepare deployment package
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          mkdir -p deployment/app
+          cp app/*.py deployment/app/
+          cp requirements.txt deployment/
+
+      - name: Upload deployment package
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: webapp-source
+          path: deployment/
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Azure App Service
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AZURE_WEBAPP_NAME != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: azure-webapp-production
+      cancel-in-progress: false
+    steps:
+      - name: Check deployment credentials
+        env:
+          PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        run: |
+          if [ -z "$PUBLISH_PROFILE" ]; then
+            echo '::error::Set the AZURE_WEBAPP_PUBLISH_PROFILE repository secret. See README.md.'
+            exit 1
+          fi
+
+      - name: Download deployment package
+        uses: actions/download-artifact@v4
+        with:
+          name: webapp-source
+          path: deployment
+
+      - name: Deploy app
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: deployment

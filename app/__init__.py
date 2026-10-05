@@ -1,0 +1,1 @@
+"""AssetDB application package."""
